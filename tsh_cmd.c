@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include "tsh_cmd.h"
 
 int tsh_help(int argc, char* argv[])
@@ -14,5 +15,6 @@ int tsh_help(int argc, char* argv[])
 
 int tsh_exit(int argc, char* argv[])
 {
-    exit(0);
+    extern pid_t tsh_pid;
+    kill(tsh_pid, SIGINT);
 }

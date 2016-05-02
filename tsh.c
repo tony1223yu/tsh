@@ -1,124 +1,254 @@
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <dirent.h>
 #include "tsh.h"
 #include "tsh_cmd.h"
 
 Command_handler* parse_cmd_hdr(char*);
 Command* parse_cmd(char*);
+void check_cmd(Command*);
+void check_cmd_hdr(Command_handler*);
 int findSystemCommand(char*);
-int processSystemCommand(Command*);
 int findTSHCommand(char*);
 int processTSHCommand(Command*);
-void sig_tstp_handler(int sig);
+void signal_handler(int);
 
-TSH_command tsh_cmds[] = 
+TSH_command tsh_cmds[] =
 {
     { "help", "Display the list of supported command", tsh_help },
     { "exit", "Exit TSH", tsh_exit }
 };
 int tsh_cmd_num;
 
+int tsh_pid;
+ProcessGroup** backgroundGroup;
+
 int main()
 {
+    char *pwd;
     int stdin_fd = dup(0);
     int stdout_fd = dup(1);
+
     tsh_cmd_num = sizeof(tsh_cmds) / sizeof(TSH_command);
+
+    pwd = strdup(getenv("PWD"));
+
+    backgroundGroup = (ProcessGroup**) malloc(sizeof(ProcessGroup*) * MAX_BG_JOB);
+    memset(backgroundGroup, 0, sizeof(ProcessGroup*) * MAX_BG_JOB);
+
+    // PID of tsh
+    tsh_pid = getpid();
 
     // Infinite loop
     while (1)
     {
-        char *pwd;
         char input[CMD_MAX_LEN];
-        
+
         // Show the prompt
-        pwd = strdup(getenv("PWD"));
-        printf("tsh @ %s $ ", pwd);
-        free (pwd);
+        fprintf(stdout, "tsh @ %s $ ", pwd);
+        fflush(stdout);
 
         // Read the command
         if (fgets(input, CMD_MAX_LEN, stdin) != NULL)
         {
             Command_handler* cmd_hdr;
-            pid_t child_pid;
             int cmd_idx;
-            
+            int cur_pgid = -1;
+
             cmd_hdr = parse_cmd_hdr(input);
+            check_cmd_hdr(cmd_hdr);
 
             for (cmd_idx = 0 ; cmd_idx < cmd_hdr->cmd_num ; cmd_idx ++)
             {
+                pid_t child_pid;
                 Command* curr_cmd = cmd_hdr->cmds[cmd_idx];
-                char* inputFile = NULL;
-                char* outputFile = NULL;
+                check_cmd(curr_cmd);
 
-                if (curr_cmd->arg_num == 0)
-                    continue;
-
-                // Check for redirect
-                int arg_idx;
-                int min_idx = curr_cmd->arg_num;
-                for (arg_idx = 0 ; arg_idx < curr_cmd->arg_num ; arg_idx ++)
+                if ((child_pid = fork()) == -1)
                 {
-                    if (strcmp(curr_cmd->args[arg_idx], ">") == 0)
+                    fprintf(stderr, "tsh: fork error.\n");
+                    exit(1);
+                }
+                else if (child_pid == 0) // child
+                {
+                    // set pgid
+                    if (cur_pgid == -1)
+                        setpgid(0, 0);
+                    else
+                        setpgid(0, cur_pgid);
+
+                    // Check for redirect
+                    if (curr_cmd->inputFile != NULL)
                     {
-                        free (curr_cmd->args[arg_idx]);
-                        curr_cmd->args[arg_idx] = NULL;
-                        outputFile = curr_cmd->args[arg_idx + 1];
+                        // Close stdin fd
+                        close(0);
+                        open(curr_cmd->inputFile, O_RDONLY);
                     }
-                    else if (strcmp(curr_cmd->args[arg_idx], "<") == 0)
+                    if (curr_cmd->outputFile != NULL)
                     {
-                        free (curr_cmd->args[arg_idx]);
-                        curr_cmd->args[arg_idx] = NULL;
-                        inputFile = curr_cmd->args[arg_idx + 1];
+                        // Close stdout fd
+                        // New file would have -rw-rw-r-- permission
+                        close(1);
+                        open(curr_cmd->outputFile, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
                     }
-                }
 
-                if (inputFile != NULL)
-                {
-                    // Close stdin fd
-                    close(0);
-                    open(inputFile, O_RDONLY);
-                }
-                if (outputFile != NULL)
-                {
-                    // Close stdout fd
-                    close(1);
+                    // Execute the command
+                    if (findTSHCommand(curr_cmd->args[0]))
+                    {
+                        processTSHCommand(curr_cmd);
+                    }
+                    else if (findSystemCommand(curr_cmd->args[0]))
+                    {
+                        if (execvp(curr_cmd->args[0], curr_cmd->args) == -1)
+                        {
+                            fprintf(stderr, "tsh: execvp error: %s, %d\n", curr_cmd->args[0], errno);
+                        }
+                    }
+                    else
+                    {
+                        fprintf(stderr, "tsh: command not found: %s\n", curr_cmd->args[0]);
+                    }
 
-                    // New file would have -rw-rw-r-- permission
-                    open(outputFile, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+                    // Child process should exit here
+                    exit(0);
                 }
+                else if (child_pid > 0) // parent process
+                {
+                    // wait until the child process set its pgid
+                    while (getpgid(child_pid) == getpgrp());
 
-                if (findTSHCommand(curr_cmd->args[0]))
-                {
-                    processTSHCommand(curr_cmd);
-                }
-                else
-                {
-                    processSystemCommand(curr_cmd);
-                }
+                    // only set for first command
+                    if (cur_pgid == -1)
+                        cur_pgid = getpgid(child_pid);
 
-                if (inputFile != NULL)
-                {
-                    // Close stdin fd
-                    close(0);
-                    dup2(stdin_fd, 0);
-                }
-                if (outputFile != NULL)
-                {
-                    // Close stdout fd
-                    close(1);
-                    dup2(stdout_fd, 1);
+                    curr_cmd->pid = child_pid;
                 }
             }
 
+            if (cmd_hdr->isBackGround == 1)
+            {
+                // Create ProcessGroup
+                int idxPID;
+                ProcessGroup* curProcGroup = (ProcessGroup*) malloc(sizeof(ProcessGroup));
+                curProcGroup->pgid = cur_pgid;
+                curProcGroup->proc_num = cmd_hdr->cmd_num;
+                curProcGroup->finish_num = 0;
+                curProcGroup->status = (int*) malloc(sizeof(int) * curProcGroup->proc_num);
+                curProcGroup->pids = (pid_t*) malloc(sizeof(pid_t) * curProcGroup->proc_num);
+                for (idxPID = 0 ; idxPID < curProcGroup->proc_num ; idxPID ++)
+                    curProcGroup->pids[idxPID] = cmd_hdr->cmds[idxPID]->pid;
 
-            // TODO: Free the cmd_hdr
+                // Insert into backgroundGroup
+                int idxPG;
+                for (idxPG = 0 ; idxPG < MAX_BG_JOB ; idxPG ++)
+                {
+                    if (backgroundGroup[idxPG] == NULL)
+                    {
+                        int idxPID;
+                        backgroundGroup[idxPG] = curProcGroup;
+
+                        fprintf(stderr, "[%d] start\n", idxPG);
+                        fprintf(stderr, "\t");
+                        for (idxPID = 0 ; idxPID < curProcGroup->proc_num ; idxPID ++)
+                            fprintf(stderr, "%d ", curProcGroup->pids[idxPID]);
+                        fprintf(stderr, "\n");
+
+                        break;
+                    }
+                }
+                if (idxPG == MAX_BG_JOB)
+                {
+                    fprintf(stderr, "tsh: Cannot create background process group\n");
+                    exit(1);
+                }
+            }
+            else
+            {
+                signal(SIGTTOU, SIG_IGN);
+                tcsetpgrp(STDIN_FILENO, cur_pgid);
+                signal(SIGTTOU, SIG_DFL);
+
+                for (cmd_idx = 0 ; cmd_idx < cmd_hdr->cmd_num ; cmd_idx ++)
+                    waitpid(cmd_hdr->cmds[cmd_idx]->pid, NULL);
+
+                signal(SIGTTOU, SIG_IGN);
+                tcsetpgrp(STDIN_FILENO, getpgrp());
+                signal(SIGTTOU, SIG_DFL);
+            }
+
+            // Free the cmd_hdr
+            for (cmd_idx = 0 ; cmd_idx < cmd_hdr->cmd_num ; cmd_idx ++)
+            {
+                Command* curr_cmd = cmd_hdr->cmds[cmd_idx];
+                int arg_idx;
+
+                for (arg_idx = 0 ; arg_idx < curr_cmd->arg_num ; arg_idx ++)
+                    if (curr_cmd->args[arg_idx])
+                        free (curr_cmd->args[arg_idx]);
+                free (curr_cmd->args);
+
+                if (curr_cmd->inputFile)
+                    free (curr_cmd->inputFile);
+                if (curr_cmd->outputFile)
+                    free (curr_cmd->outputFile);
+
+                free (curr_cmd);
+            }
+            free (cmd_hdr->cmds);
+            free (cmd_hdr);
+        }
+
+        // Check for the exit status of background process
+        pid_t pid;
+        int status;
+        while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+        {
+            int idxPG;
+            for (idxPG = 0 ; idxPG < MAX_BG_JOB ; idxPG ++)
+            {
+                ProcessGroup* currGroup = backgroundGroup[idxPG];
+                if (currGroup)
+                {
+                    int idxPID;
+                    for (idxPID = 0 ; idxPID < currGroup->proc_num ; idxPID ++)
+                    {
+                        if (currGroup->pids[idxPID] == pid)
+                        {
+                            currGroup->status[idxPID] = status;
+                            break;
+                        }
+                    }
+
+                    if (idxPID != currGroup->proc_num)
+                    {
+                        currGroup->finish_num ++;
+                        if (currGroup->proc_num == currGroup->finish_num)
+                        {
+                            int idx;
+                            fprintf(stderr, "[%d] finish\n", idxPG);
+                            for (idx = 0 ; idx < currGroup->proc_num ; idx ++)
+                            {
+                                fprintf(stderr, "\t%d\tstatus: %d\n", currGroup->pids[idx], currGroup->status[idx]);
+                            }
+
+                            free (currGroup->pids);
+                            free (currGroup->status);
+                            free (currGroup);
+                            backgroundGroup[idxPG] = NULL;
+                        }
+                    }
+                }
+            }
         }
     }
+
+    free (backgroundGroup);
 }
 
 int findTSHCommand(char* cmd_name)
@@ -130,11 +260,6 @@ int findTSHCommand(char* cmd_name)
             return 1;
     }
     return 0;
-}
-
-void sig_tstp_handler(int sig)
-{
-
 }
 
 int processTSHCommand(Command* cmd)
@@ -150,47 +275,6 @@ int processTSHCommand(Command* cmd)
     // Should not be here since we would call findTSHCommand first.
 
     return 0;
-}
-
-int processSystemCommand(Command* cmd)
-{
-    // Execute the command if they are found in PATH
-    if ((child_pid = fork()) < 0)
-    {
-        fprintf(stderr, "fork error");
-        exit(1);
-    }
-    else if (child_pid == 0) // child
-    {
-        if (findSystemCommand(cmd->args[0]) == 0)
-        {
-            fprintf(stderr, "tsh: Command not found: %s\n", cmd->args[0]); 
-            exit(0);
-        }
-        else
-        {
-            // By default, child would inherit parent's process group ID.
-            execvp(cmd->args[0], cmd->args);
-        }
-    }
-    else
-    {
-        // Ignore these signals, since they should be processed by
-        // the child process.
-        //
-        signal(SIGINT, SIG_IGN);
-        signal(SIGQUIT, SIG_IGN);
-        signal(SIGTSTP, sigtstp_handler);
-
-        waitpid(child_pid, NULL, 0);
-
-        // After the child process is finished, parent should handle
-        // the following signals.
-        //
-        signal(SIGINT, SIG_DFL);
-        signal(SIGQUIT, SIG_DFL);
-        signal(SIGTSTP, SIG_DFL);
-    }
 }
 
 int findSystemCommand(char* cmd_name)
@@ -228,6 +312,28 @@ int findSystemCommand(char* cmd_name)
     return 0;
 }
 
+void check_cmd_hdr(Command_handler* cmd_hdr)
+{
+    int cmd_idx;
+    for (cmd_idx = 0 ; cmd_idx < cmd_hdr->cmd_num ; cmd_idx ++)
+    {
+        Command* cmd = cmd_hdr->cmds[cmd_idx];
+        int arg_idx;
+        for (arg_idx = 0 ; arg_idx < cmd->arg_num ; arg_idx ++)
+        {
+            if ((cmd->args[arg_idx] != NULL) && (strcmp(cmd->args[arg_idx], "&") == 0))
+            {
+                free (cmd->args[arg_idx]);
+                cmd->args[arg_idx] = NULL;
+                if (cmd_idx != cmd_hdr->cmd_num - 1)
+                    fprintf(stderr, "tsh: Unrecognized format.\n");
+                else
+                    cmd_hdr->isBackGround = 1;
+            }
+        }
+    }
+}
+
 Command_handler* parse_cmd_hdr(char* input)
 {
     char *subStr;
@@ -235,12 +341,14 @@ Command_handler* parse_cmd_hdr(char* input)
     Command_handler* ret = (Command_handler*) malloc(sizeof(Command_handler));
     int cur_num = 1;
 
+    ret->isBackGround = 0;
     ret->cmd_num = 0;
     ret->cmds = (Command**) malloc(sizeof(Command*) * cur_num);
 
     subStr = strtok_r(input, "|", &remainStr);
     while (subStr != NULL)
     {
+        Command* tmp_cmd;
         if (ret->cmd_num == cur_num)
         {
             Command** tmp = (Command**) malloc(sizeof(Command*) * ret->cmd_num);
@@ -255,8 +363,11 @@ Command_handler* parse_cmd_hdr(char* input)
             free (tmp);
         }
 
-        ret->cmds[ret->cmd_num] = parse_cmd(subStr);
-        ret->cmd_num ++;
+        if ((tmp_cmd = parse_cmd(subStr)) != NULL)
+        {
+            ret->cmds[ret->cmd_num] = tmp_cmd;
+            ret->cmd_num ++;
+        }
 
         subStr = strtok_r(remainStr, "|", &remainStr);
     }
@@ -273,10 +384,37 @@ Command_handler* parse_cmd_hdr(char* input)
         memcpy (ret->cmds, tmp, ret->cmd_num * sizeof(Command*));
 
         free (tmp);
-
     }
 
     return ret;
+}
+
+void check_cmd(Command* cmd)
+{
+    // Check for redirect
+    int arg_idx;
+    int min_idx = cmd->arg_num;
+    for (arg_idx = 0 ; arg_idx < cmd->arg_num ; arg_idx ++)
+    {
+        if (cmd->args[arg_idx] == NULL)
+            continue;
+        else if (strcmp(cmd->args[arg_idx], ">") == 0)
+        {
+            free (cmd->args[arg_idx]);
+            cmd->args[arg_idx] = NULL;
+            cmd->outputFile = cmd->args[arg_idx + 1];
+            cmd->args[arg_idx + 1] = NULL;
+            arg_idx ++;
+        }
+        else if (strcmp(cmd->args[arg_idx], "<") == 0)
+        {
+            free (cmd->args[arg_idx]);
+            cmd->args[arg_idx] = NULL;
+            cmd->inputFile = cmd->args[arg_idx + 1];
+            cmd->args[arg_idx + 1] = NULL;
+            arg_idx ++;
+        }
+    }
 }
 
 Command* parse_cmd(char* input)
@@ -284,7 +422,9 @@ Command* parse_cmd(char* input)
     char *subStr;
     char *remainStr;
     Command* ret = (Command*) malloc(sizeof(Command));
-    int cur_num = 1;
+    int cur_num = 2;
+    ret->inputFile = NULL;
+    ret->outputFile = NULL;
     ret->arg_num = 0;
     ret->args = (char**) malloc(sizeof(char*) * cur_num);
 
@@ -292,7 +432,7 @@ Command* parse_cmd(char* input)
     while (subStr != NULL)
     {
         // expand the size of the args array
-        if (ret->arg_num == cur_num)
+        if ((ret->arg_num + 1) >= cur_num)
         {
             char** tmp = (char**) malloc(sizeof(char*) * ret->arg_num);
             memcpy (tmp, ret->args, ret->arg_num * sizeof(char*));
@@ -311,6 +451,16 @@ Command* parse_cmd(char* input)
 
         subStr = strtok_r(remainStr, " \n", &remainStr);
     }
+
+    if (ret->arg_num == 0)
+    {
+        free (ret->args);
+        free (ret);
+        return NULL;
+    }
+
+    ret->args[ret->arg_num] = NULL;
+    ret->arg_num ++;
 
     if (ret->arg_num < cur_num)
     {
