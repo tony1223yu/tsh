@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <wordexp.h>
 #include <dirent.h>
 #include "tsh.h"
 #include "tsh_cmd.h"
@@ -25,6 +26,7 @@ void freeProcessGroup(ProcessGroup**, int);
 char* getCommandName(Command*);
 void insertIntoBackground(ProcessGroup*, int);
 void signal_handler(int);
+int checkCommandExpension(Command*, wordexp_t*);
 
 TSH_command tsh_cmds[] =
 {
@@ -63,7 +65,7 @@ int main()
     printf("|                Welcome to Tony's shell                |\n");
     printf("|                                                       |\n");
     printf("=========================================================\n");
-    printf("1. Type \'help\' for supported command.\n");
+    printf("-> Type \'help\' for supported command.\n");
     printf("\n");
 
     // Infinite loop
@@ -72,7 +74,8 @@ int main()
         char input[CMD_MAX_LEN];
 
         // Show the prompt
-        fprintf(stdout, "tsh @ %s $ ", pwd);
+        //fprintf(stdout, "tsh @ %s $ ", pwd);
+        fprintf(stdout, "0486014 @ tsh $ ");
         fflush(stdout);
 
         // Read the command
@@ -176,9 +179,11 @@ int main()
                         // Execute the command
                         if (findSystemCommand(curr_cmd->args[0]))
                         {
-                            if (execvp(curr_cmd->args[0], curr_cmd->args) == -1)
+                            wordexp_t exp_cmd;
+                            if (checkCommandExpension(curr_cmd, &exp_cmd) == 0)
                             {
-                                fprintf(stderr, "tsh: execvp error: %s, %d\n", curr_cmd->args[0], errno);
+                                if (execvp(exp_cmd.we_wordv[0], exp_cmd.we_wordv) == -1)
+                                    fprintf(stderr, "tsh: execvp error: %s, %d\n", curr_cmd->args[0], errno);
                             }
                         }
                         else
@@ -378,6 +383,28 @@ void initTSH()
 
     // PID of tsh
     tsh_pid = getpid();
+}
+
+int checkCommandExpension(Command* cmd, wordexp_t* result)
+{
+    int idx_arg;
+    if ( wordexp(cmd->args[0], result, 0))
+    {
+        wordfree (result);
+        fprintf(stderr, "tsh: wordexp error\n");
+        return 1;
+    }
+
+    for (idx_arg = 1 ; idx_arg < cmd->arg_num ; idx_arg ++)
+    {
+        if ( (cmd->args[idx_arg]) && (wordexp(cmd->args[idx_arg], result, WRDE_APPEND)) )
+        {
+            wordfree (result);
+            fprintf(stderr, "tsh: wordexp error\n");
+            return 1;
+        }
+    }
+    return 0;
 }
 
 // isBackGround = 1 represents that the process group
