@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <string.h>
 #include "tsh.h"
 #include "tsh_cmd.h"
 
@@ -21,15 +22,45 @@ int tsh_exit(int argc, char* argv[])
     return 0;
 }
 
+int tsh_unset(int argc, char* argv[])
+{
+    if (argc < 2 || !argv[1])
+    {
+        fprintf(stderr, "Usage: unset <ENV_VAR>\n");
+        return 0;
+    }
+
+    unsetenv(argv[1]);
+    return 0;
+}
+
+int tsh_export(int argc, char* argv[])
+{
+    if (argc < 3 || !argv[1] || !argv[2])
+    {
+        fprintf(stderr, "Usage: export <ENV_VAR> <VAL>\n");
+        return 0;
+    }
+
+    setenv(argv[1], argv[2], 1);
+    return 0;
+}
+
 int tsh_fg(int argc, char* argv[])
 {
-    if ((argc < 2) || (argv[1][0] != '%'))
+    if (argc < 2 || !argv[1] || (argv[1][0] != '%'))
     {
         fprintf(stderr, "Usage: fg %%<job>\n");
         return 0;
     }
 
     int jobID = atoi(&(argv[1][1]));
+    if (jobID >= MAX_BG_JOB)
+    {
+        fprintf(stderr, "tsh: fg %%%d: no such job\n", jobID);
+        return 0;
+    }
+
     ProcessGroup* currGroup = backgroundGroup[jobID];
     if (currGroup == NULL)
         fprintf(stderr, "tsh: fg %%%d: no such job\n", jobID);
@@ -64,13 +95,19 @@ int tsh_fg(int argc, char* argv[])
 
 int tsh_bg(int argc, char* argv[])
 {
-    if ((argc < 2) || (argv[1][0] != '%'))
+    if (argc < 2 || !argv[1] || (argv[1][0] != '%'))
     {
         fprintf(stderr, "Usage: bg %%<job>\n");
         return 0;
     }
 
     int jobID = atoi(&(argv[1][1]));
+    if (jobID >= MAX_BG_JOB)
+    {
+        fprintf(stderr, "tsh: bg %%%d: no such job\n", jobID);
+        return 0;
+    }
+
     ProcessGroup* currGroup = backgroundGroup[jobID];
     if (currGroup == NULL)
         fprintf(stderr, "tsh: bg %%%d: no such job\n", jobID);

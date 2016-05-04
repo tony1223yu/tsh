@@ -32,6 +32,8 @@ TSH_command tsh_cmds[] =
     { "jobs", "Display the list of background process groups", tsh_jobs },
     { "fg",   "Move specific process groups to foreground", tsh_fg },
     { "bg",   "Move specific process groups to background", tsh_bg },
+    { "export", "Set the given environment variable", tsh_export },
+    { "unset", "Unset the given environment variable", tsh_unset },
     { "exit", "Exit TSH", tsh_exit }
 };
 int tsh_cmd_num;
@@ -174,7 +176,6 @@ int main()
                         // Execute the command
                         if (findSystemCommand(curr_cmd->args[0]))
                         {
-                            check_cmd_env(curr_cmd);
                             if (execvp(curr_cmd->args[0], curr_cmd->args) == -1)
                             {
                                 fprintf(stderr, "tsh: execvp error: %s, %d\n", curr_cmd->args[0], errno);
@@ -622,6 +623,7 @@ Command_handler* parse_cmd_hdr(char* input)
 
         if ((tmp_cmd = parse_cmd(subStr)) != NULL)
         {
+            check_cmd_env(tmp_cmd);
             check_cmd(tmp_cmd);
             ret->cmds[ret->cmd_num] = tmp_cmd;
             ret->cmd_num ++;
@@ -650,6 +652,9 @@ Command_handler* parse_cmd_hdr(char* input)
 void check_cmd_env(Command* cmd)
 {
     // Check for environment variable
+    //
+    // Does not consider the concatenation of environment variable for now
+    //
     int arg_idx;
     char *cur_arg;
 
@@ -660,7 +665,6 @@ void check_cmd_env(Command* cmd)
 
         if (cur_arg && (cur_arg[0] == '$'))
         {
-            printf("here ");
             env = getenv(cur_arg+1);
             free (cmd->args[arg_idx]);
             cmd->args[arg_idx] = NULL;
@@ -777,8 +781,8 @@ char* getCommandName(Command* cmd)
     {
         if (cmd->args[arg_idx] != NULL) // redirect argument would be clear to 0
         {
-            strcat(ret, cmd->args[arg_idx]);
-            strcat(ret, " ");
+            ret = strcat(ret, cmd->args[arg_idx]);
+            ret = strcat(ret, " ");
         }
     }
 
