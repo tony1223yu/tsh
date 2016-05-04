@@ -11,6 +11,7 @@ typedef struct Command
     char *inputFile;
     char *outputFile;
     pid_t pid;
+    int isPath;
 
 } Command;
 

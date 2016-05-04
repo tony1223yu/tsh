@@ -177,18 +177,40 @@ int main()
                         }
 
                         // Execute the command
-                        if (findSystemCommand(curr_cmd->args[0]))
+                        if (curr_cmd->isPath == 1)
                         {
                             wordexp_t exp_cmd;
                             if (checkCommandExpension(curr_cmd, &exp_cmd) == 0)
                             {
-                                if (execvp(exp_cmd.we_wordv[0], exp_cmd.we_wordv) == -1)
-                                    fprintf(stderr, "tsh: execvp error: %s, %d\n", curr_cmd->args[0], errno);
+                                if (execv(exp_cmd.we_wordv[0], exp_cmd.we_wordv) == -1)
+                                {
+                                    switch (errno)
+                                    {
+                                        case ENOENT:
+                                            fprintf(stderr, "tsh: no such file or directory\n");
+                                            break;
+                                        default:
+                                            fprintf(stderr, "tsh: execv error: %s, %d\n", curr_cmd->args[0], errno);
+                                            break;
+                                    }
+                                }
                             }
                         }
                         else
                         {
-                            fprintf(stderr, "tsh: command not found: %s\n", curr_cmd->args[0]);
+                            if (findSystemCommand(curr_cmd->args[0]))
+                            {
+                                wordexp_t exp_cmd;
+                                if (checkCommandExpension(curr_cmd, &exp_cmd) == 0)
+                                {
+                                    if (execvp(exp_cmd.we_wordv[0], exp_cmd.we_wordv) == -1)
+                                        fprintf(stderr, "tsh: execvp error: %s, %d\n", curr_cmd->args[0], errno);
+                                }
+                            }
+                            else
+                            {
+                                fprintf(stderr, "tsh: command not found: %s\n", curr_cmd->args[0]);
+                            }
                         }
 
                         // Child process should exit here
@@ -744,6 +766,7 @@ Command* parse_cmd(char* input)
     ret->inputFile = NULL;
     ret->outputFile = NULL;
     ret->arg_num = 0;
+    ret->isPath = 0;
     ret->args = (char**) malloc(sizeof(char*) * cur_num);
 
     subStr = strtok_r(input, " \n", &remainStr);
@@ -794,6 +817,9 @@ Command* parse_cmd(char* input)
 
         free (tmp);
     }
+
+    if (strchr(ret->args[0], '/') != NULL)
+        ret->isPath = 1;
 
     return ret;
 }
