@@ -26,9 +26,14 @@ typedef struct ProcessGroup
     pid_t pgid;
     int proc_num;
     int finish_num;
-    int *status;
+    int *isRunning;
+    int *status; // store the status when isRunning = 0
     pid_t *pids;
+    char** cmdlines;
 
 } ProcessGroup;
+
+extern ProcessGroup** backgroundGroup;
+extern ProcessGroup* foregroundGroup;
 
 #endif
