@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <string.h>
+#include <unistd.h>
+#include <errno.h>
 #include "tsh.h"
 #include "tsh_cmd.h"
 
@@ -20,6 +22,38 @@ int tsh_exit(int argc, char* argv[])
     extern pid_t tsh_pid;
     kill(tsh_pid, SIGINT);
     return 0;
+}
+
+int tsh_cd(int argc, char* argv[])
+{
+    if (argc < 2 || !argv[1])
+    {
+        chdir(getenv("HOME"));
+        setenv("PWD", getenv("HOME"), 1);
+    }
+    else
+    {
+        if (argv[1][0] == '~')
+        {
+            argv[1][0] = '.';
+            chdir(getenv("HOME"));
+        }
+
+        if (chdir(argv[1]) == -1)
+        {
+            switch (errno)
+            {
+                case ENOENT:
+                    fprintf(stderr, "tsh: cd: no such file or directory\n");
+                    break;
+                default:
+                    fprintf(stderr, "tsh: cd error: %d\n", errno);
+                    break;
+            }
+        }
+
+        setenv("PWD", getcwd(NULL, 1024), 1);
+    }
 }
 
 int tsh_unset(int argc, char* argv[])

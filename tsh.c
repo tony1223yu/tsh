@@ -11,23 +11,6 @@
 #include "tsh.h"
 #include "tsh_cmd.h"
 
-void initTSH();
-Command_handler* parse_cmd_hdr(char*);
-Command* parse_cmd(char*);
-void check_cmd(Command*);
-void check_cmd_env(Command*);
-void check_cmd_hdr(Command_handler*);
-int findSystemCommand(char*);
-int findTSHCommand(char*);
-int processTSHCommand(Command*);
-void moveToForeground(ProcessGroup*);
-int setProcessGroupStatus(ProcessGroup**, int, pid_t, int, int*, int*);
-void freeProcessGroup(ProcessGroup**, int);
-char* getCommandName(Command*);
-void insertIntoBackground(ProcessGroup*, int);
-void signal_handler(int);
-int checkCommandExpension(Command*, wordexp_t*);
-
 TSH_command tsh_cmds[] =
 {
     { "help", "Display the list of supported command", tsh_help },
@@ -36,6 +19,7 @@ TSH_command tsh_cmds[] =
     { "bg",   "Move specific process groups to background", tsh_bg },
     { "export", "Set the given environment variable", tsh_export },
     { "unset", "Unset the given environment variable", tsh_unset },
+    { "cd", "Change current working directory", tsh_cd },
     { "exit", "Exit TSH", tsh_exit }
 };
 int tsh_cmd_num;
@@ -74,9 +58,10 @@ int main()
         char input[CMD_MAX_LEN];
 
         // Show the prompt
-        //fprintf(stdout, "tsh @ %s $ ", pwd);
-        fprintf(stdout, "0486014 @ tsh $ ");
+        pwd = strdup(getenv("PWD"));
+        fprintf(stdout, "0486014 @ tsh [%s] $ ", pwd);
         fflush(stdout);
+        free (pwd);
 
         // Read the command
         if (fgets(input, CMD_MAX_LEN, stdin) != NULL)
@@ -391,8 +376,6 @@ void initTSH()
     stdout_fd = dup(1);
 
     tsh_cmd_num = sizeof(tsh_cmds) / sizeof(TSH_command);
-
-    pwd = strdup(getenv("PWD"));
 
     backgroundGroup = (ProcessGroup**) malloc(sizeof(ProcessGroup*) * MAX_BG_JOB);
     memset(backgroundGroup, 0, sizeof(ProcessGroup*) * MAX_BG_JOB);

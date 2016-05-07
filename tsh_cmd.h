@@ -15,6 +15,7 @@ int tsh_export(int, char*[]);
 int tsh_unset(int, char*[]);
 int tsh_fg(int, char*[]);
 int tsh_bg(int, char*[]);
+int tsh_cd(int, char*[]);
 
 extern TSH_command tsh_cmds[]; 
 extern int tsh_cmd_num;
